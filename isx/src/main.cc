@@ -219,6 +219,17 @@ class ResourcePackage {
       debug("\n");
     }
   }
+
+  void list_files() const {
+    for (auto *handle : resource_handles) {
+      fmt::printf(
+          "file %-40s compressed: %s, encrypted: %s, offset: 0x%08x size: "
+          "0x%08x\n",
+          handle->path, handle->flags & Compressed ? "true" : "false",
+          handle->flags & Encrypted ? "true" : "false", handle->offset,
+          handle->size);
+    }
+  }
 };
 
 struct Config {
@@ -244,26 +255,51 @@ struct Config {
         mode = Mode::Extract;
         file_name = argv[i + 1];
         ++i;
+      } else if (!std::strcmp(argv[i], "--list")) {
+        if (i + 1 > argc) {
+          fmt::printf("expected file name to list files from after `--list`\n");
+          throw InvalidArgument{};
+        }
+        mode = Mode::List;
+        file_name = argv[i + 1];
+        ++i;
       }
     }
   }
 };
+
+struct LoadedFile {
+  std::unique_ptr<std::uint8_t[]> data;
+  std::ptrdiff_t size;
+};
+
+LoadedFile load_file(const char *name) {
+  auto *file = std::fopen(name, "rb");
+  std::fseek(file, 0, SEEK_END);
+  const auto size = std::ftell(file);
+  std::fseek(file, 0, SEEK_SET);
+
+  auto buffer = std::make_unique<std::uint8_t[]>(size);
+  std::fread(buffer.get(), size, 1, file);
+  std::fclose(file);
+
+  return {std::move(buffer), size};
+}
 
 int main(int argc, char **argv) {
   Config c{argc, argv};
   DEBUG_ENABLED = c.debug;
 
   if (c.mode == Config::Mode::Extract) {
-    auto *file = std::fopen(c.file_name, "rb");
-    std::fseek(file, 0, SEEK_END);
-    const auto size = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-
-    auto buffer = std::make_unique<std::uint8_t[]>(size);
-    std::fread(buffer.get(), size, 1, file);
+    auto [buffer, size] = load_file(c.file_name);
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.extract_files("output");
+  } else if (c.mode == Config::Mode::List) {
+    auto [buffer, size] = load_file(c.file_name);
+
+    ResourcePackage pckg{buffer.get(), size};
+    pckg.list_files();
   }
 
   return 0;
