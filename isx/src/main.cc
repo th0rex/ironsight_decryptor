@@ -56,16 +56,14 @@ struct FileHeader {
   std::uint32_t handle_count;
 };
 
-enum ResourceFlags : std::uint32_t {
-  Compressed = 1,
-  Encrypted = 2,
-};
+constexpr static std::uint32_t RESOURCE_COMPRESSED = 1;
+constexpr static std::uint32_t RESOURCE_ENCRYPTED = 2;
 
 struct ResourceHandle {
   char path[128];
   std::uint32_t offset;
   std::uint32_t size;
-  ResourceFlags flags;
+  std::uint32_t flags;
 
   std::uint32_t decrypt(gsl::span<std::uint8_t> buffer_view) const {
     if (size <= 4) {
@@ -142,19 +140,20 @@ struct ResourceHandle {
     auto buffer_view = gsl::span{buffer.data(), size};
 
     std::uint32_t real_size = size;
-    if (flags & Encrypted) {
+    if (flags & RESOURCE_ENCRYPTED) {
       real_size = decrypt(buffer_view);
       buffer_view = gsl::span{buffer_view.data() + 4, real_size};
       debug(", size after decrypt = 0x%08x", real_size);
     }
 
-    if (flags & Compressed) {
+    if (flags & RESOURCE_COMPRESSED) {
       real_size = uncompress(buffer_view, uncompress_buffer);
       debug(", size after decompress = 0x%08x", real_size);
     }
 
-    return flags & Compressed ? gsl::span{uncompress_buffer.data(), real_size}
-                              : buffer_view;
+    return flags & RESOURCE_COMPRESSED
+               ? gsl::span{uncompress_buffer.data(), real_size}
+               : buffer_view;
   }
 };
 
@@ -231,8 +230,8 @@ class ResourcePackage {
       fmt::printf(
           "file %-40s compressed: %s, encrypted: %s, offset: 0x%08x size: "
           "0x%08x\n",
-          handle->path, handle->flags & Compressed ? "true" : "false",
-          handle->flags & Encrypted ? "true" : "false", handle->offset,
+          handle->path, handle->flags & RESOURCE_COMPRESSED ? "true" : "false",
+          handle->flags & RESOURCE_ENCRYPTED ? "true" : "false", handle->offset,
           handle->size);
     }
   }
@@ -375,10 +374,8 @@ void pack_files(const char *output_name, const bool compress,
     auto &handle = handles[i];
 
     buffers[i] = std::move(data);
-    handle.flags =
-        static_cast<ResourceFlags>(handle.flags | (compress ? Compressed : 0));
-    handle.flags =
-        static_cast<ResourceFlags>(handle.flags | (encrypt ? Encrypted : 0));
+    handle.flags |= compress ? RESOURCE_COMPRESSED : 0;
+    handle.flags |= encrypt ? RESOURCE_ENCRYPTED : 0;
     handle.offset = current_offset;
     handle.size = size;
 
