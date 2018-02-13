@@ -12,10 +12,10 @@
 
 static bool DEBUG_ENABLED = false;
 
-template <typename... T>
-void debug(fmt::string_view f, T &&... ts) {
+template <typename... Args>
+void debug(const char *format, const Args &... args) {
   if (DEBUG_ENABLED) {
-    fmt::printf(f, std::forward<T>(ts)...);
+    fmt::printf(format, args...);
   }
 }
 
@@ -47,6 +47,7 @@ struct InvalidVersion {
 struct GCryError {};
 struct ZlibError {};
 struct InvalidArgument {};
+struct IOError {};
 
 struct FileHeader {
   char magic[4];
@@ -212,6 +213,11 @@ class ResourcePackage {
       const auto file_name = fmt::sprintf("%s/%s", output_prefix, handle->path);
 
       auto *file = std::fopen(file_name.c_str(), "wb");
+      if (!file) {
+        debug("fopen failed\n");
+        throw IOError{};
+      }
+
       std::fwrite(view.data(), view.size(), 1, file);
       std::fflush(file);
       std::fclose(file);
@@ -232,49 +238,22 @@ class ResourcePackage {
   }
 };
 
-struct Config {
-  bool debug;
-  enum class Mode {
-    None,
-    List,
-    Pack,
-    Extract,
-  } mode;
-  const char *file_name;
+constexpr std::ptrdiff_t round_up_16(std::ptrdiff_t p) {
+  return (p + 16 - 1) & ~(16 - 1);
+}
 
-  Config(int argc, char **argv) : debug{false}, mode{Mode::None} {
-    argc -= 1;
-    for (int i = 1; i < argc; ++i) {
-      if (!std::strcmp(argv[i], "--debug")) {
-        debug = true;
-      } else if (!std::strcmp(argv[i], "--extract")) {
-        if (i + 1 > argc) {
-          fmt::printf("expected file name to extract after `--extract`\n");
-          throw InvalidArgument{};
-        }
-        mode = Mode::Extract;
-        file_name = argv[i + 1];
-        ++i;
-      } else if (!std::strcmp(argv[i], "--list")) {
-        if (i + 1 > argc) {
-          fmt::printf("expected file name to list files from after `--list`\n");
-          throw InvalidArgument{};
-        }
-        mode = Mode::List;
-        file_name = argv[i + 1];
-        ++i;
-      }
-    }
-  }
-};
-
-struct LoadedFile {
+struct OwnedSpan {
   std::unique_ptr<std::uint8_t[]> data;
   std::ptrdiff_t size;
 };
 
-LoadedFile load_file(const char *name) {
+OwnedSpan load_file(const char *name) {
   auto *file = std::fopen(name, "rb");
+  if (!file) {
+    debug("fopen failed\n");
+    throw IOError{};
+  }
+
   std::fseek(file, 0, SEEK_END);
   const auto size = std::ftell(file);
   std::fseek(file, 0, SEEK_SET);
@@ -286,7 +265,219 @@ LoadedFile load_file(const char *name) {
   return {std::move(buffer), size};
 }
 
-int main(int argc, char **argv) {
+OwnedSpan compress_buffer(gsl::span<std::uint8_t> data) {
+  const auto orig_size = data.size();
+  auto compressed_size = orig_size + 4;
+
+  auto tmp_buffer = std::make_unique<std::uint8_t[]>(compressed_size);
+
+  while (true) {
+    z_stream stream;
+    stream.next_in = data.data();
+    stream.avail_in = orig_size;
+    stream.zalloc = nullptr;
+    stream.zfree = nullptr;
+    stream.avail_out = compressed_size - 4;
+    stream.next_out = tmp_buffer.get() + 4;
+
+    if (deflateInit(&stream, Z_DEFAULT_COMPRESSION)) {
+      debug("deflateInit failed\n");
+      throw ZlibError{};
+    }
+
+    if (deflate(&stream, Z_FINISH) != Z_STREAM_END) {
+      compressed_size *= 2;
+      tmp_buffer = std::make_unique<std::uint8_t[]>(compressed_size);
+      deflateEnd(&stream);
+      continue;
+    }
+
+    compressed_size -= stream.avail_out;
+    deflateEnd(&stream);
+    break;
+  }
+
+  *reinterpret_cast<std::uint32_t *>(tmp_buffer.get()) = orig_size;
+
+  debug(", compressed size = 0x%08x", compressed_size);
+
+  return {std::move(tmp_buffer), compressed_size};
+}
+
+OwnedSpan encrypt_buffer(gsl::span<std::uint8_t> data) {
+  const auto enc_size = static_cast<std::uint32_t>([](std::ptrdiff_t size) {
+    if (size % 16 != 0) {
+      return round_up_16(size);
+    }
+    return size + 16;
+  }(data.size()));
+
+  const auto enc_size_with_tag = enc_size + 4;
+
+  auto tmp_buffer = std::make_unique<std::uint8_t[]>(enc_size_with_tag);
+  *reinterpret_cast<std::uint32_t *>(tmp_buffer.get()) = data.size();
+  std::memcpy(tmp_buffer.get() + 4, data.data(), data.size());
+
+  gcry_cipher_hd_t handle;
+  if (gcry_cipher_open(&handle, GCRY_CIPHER_SEED, GCRY_CIPHER_MODE_CBC, 0)) {
+    debug("gcry_cipher_open failed\n");
+    throw GCryError{};
+  }
+  if (gcry_cipher_setkey(handle, &KEY, 16)) {
+    debug("gcry_cipher_setkey failed\n");
+    throw GCryError{};
+  }
+  if (gcry_cipher_setiv(handle, &IV, 16)) {
+    debug("gcry_cipher_setiv failed\n");
+    throw GCryError{};
+  }
+  if (gcry_cipher_encrypt(handle, tmp_buffer.get() + 4, enc_size, NULL, 0)) {
+    debug("gcry_cipher_encrypt failed\n");
+    throw GCryError{};
+  }
+  gcry_cipher_close(handle);
+
+  debug(", encrypted size: 0x%08x", enc_size_with_tag);
+
+  return {std::move(tmp_buffer), enc_size_with_tag};
+}
+
+void pack_files(const char *output_name, const bool compress,
+                const bool encrypt, const char **files, const int count) {
+  const auto output_buffer = fmt::sprintf("%s.wpg", output_name);
+  auto handles = std::make_unique<ResourceHandle[]>(count);
+  auto buffers = std::make_unique<std::unique_ptr<std::uint8_t[]>[]>(count);
+
+  debug("output path: %-40s compress: %s, encrypt: %s, file count: %d\n",
+        output_buffer, compress ? "true" : "false", encrypt ? "true" : "false",
+        count);
+
+  auto current_offset = sizeof(FileHeader) + sizeof(ResourceHandle) * count;
+
+  for (auto i = 0; i < count; ++i) {
+    auto [data, size] = load_file(files[i]);
+    debug("packing file %-40s: offset = 0x%08x size = 0x%08x", files[i],
+          current_offset, size);
+
+    if (compress) {
+      auto [d, s] = compress_buffer(gsl::span{data.get(), size});
+      data = std::move(d);
+      size = s;
+    }
+
+    if (encrypt) {
+      auto [d, s] = encrypt_buffer(gsl::span{data.get(), size});
+      data = std::move(d);
+      size = s;
+    }
+    debug("\n");
+
+    auto &handle = handles[i];
+
+    buffers[i] = std::move(data);
+    handle.flags =
+        static_cast<ResourceFlags>(handle.flags | (compress ? Compressed : 0));
+    handle.flags =
+        static_cast<ResourceFlags>(handle.flags | (encrypt ? Encrypted : 0));
+    handle.offset = current_offset;
+    handle.size = size;
+
+    std::memset(handle.path, 0, 128);
+    std::strcpy(handle.path, files[i]);
+
+    current_offset += size;
+  }
+
+  const auto actual_output_name = fmt::sprintf("%s\\", output_name);
+
+  FileHeader header;
+  std::strcpy(header.magic, "RPKG");
+  header.version = 1;
+  header.handle_count = count;
+  std::strcpy(header.path, actual_output_name.c_str());
+
+  auto *file = std::fopen(output_buffer.c_str(), "wb");
+  if (!file) {
+    debug("fopen failed\n");
+    throw IOError{};
+  }
+
+  std::fwrite(&header, sizeof(FileHeader), 1, file);
+  std::fwrite(handles.get(), sizeof(ResourceHandle), count, file);
+
+  for (auto i = 0; i < count; ++i) {
+    std::fwrite(buffers[i].get(), handles[i].size, 1, file);
+  }
+
+  std::fflush(file);
+  std::fclose(file);
+}
+
+struct Config {
+  bool debug;
+  enum class Mode {
+    None,
+    List,
+    Pack,
+    Extract,
+  } mode;
+  union {
+    const char *file_name;
+    struct {
+      const char *output_name;
+      const char **files;
+      int count;
+      bool compress;
+      bool encrypt;
+    };
+  };
+
+  Config(int argc, const char **argv) : debug{false}, mode{Mode::None} {
+    argc -= 1;
+    for (int i = 1; i < argc; ++i) {
+      if (!std::strcmp(argv[i], "--debug")) {
+        debug = true;
+      } else if (!std::strcmp(argv[i], "--extract")) {
+        if (i + 1 > argc) {
+          fmt::printf("expected file name to extract after `--extract`\n");
+          throw InvalidArgument{};
+        }
+        mode = Mode::Extract;
+        file_name = argv[i + 1];
+        return;
+      } else if (!std::strcmp(argv[i], "--list")) {
+        if (i + 1 > argc) {
+          fmt::printf("expected file name to list files from after `--list`\n");
+          throw InvalidArgument{};
+        }
+        mode = Mode::List;
+        file_name = argv[i + 1];
+        return;
+      } else if (!std::strcmp(argv[i], "--pack")) {
+        if (i + 1 > argc) {
+          fmt::printf("expected output name after `--pack`\n");
+          throw InvalidArgument{};
+        }
+        mode = Mode::Pack;
+        output_name = argv[i + 1];
+        i += 1;
+        if (i + 1 <= argc && !std::strcmp(argv[i + 1], "--compress")) {
+          compress = true;
+          i += 1;
+        }
+        if (i + 1 <= argc && !std::strcmp(argv[i + 1], "--encrypt")) {
+          encrypt = true;
+          i += 1;
+        }
+        files = &argv[i + 1];
+        count = argc - i;
+        return;
+      }
+    }
+  }
+};
+
+int main(int argc, const char **argv) {
   Config c{argc, argv};
   DEBUG_ENABLED = c.debug;
 
@@ -300,6 +491,8 @@ int main(int argc, char **argv) {
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.list_files();
+  } else if (c.mode == Config::Mode::Pack) {
+    pack_files(c.output_name, c.compress, c.encrypt, c.files, c.count);
   }
 
   return 0;
