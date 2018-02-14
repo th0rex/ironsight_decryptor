@@ -130,7 +130,6 @@ struct ResourceHandle {
     return out_size;
   }
 
-  /// Returns true if the uncompress buffer was used.
   gsl::span<const std::uint8_t>
   extract_to(gsl::span<const std::uint8_t> data,
              std::vector<std::uint8_t> &buffer,
