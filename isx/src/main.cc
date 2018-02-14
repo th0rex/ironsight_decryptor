@@ -131,9 +131,10 @@ struct ResourceHandle {
   }
 
   /// Returns true if the uncompress buffer was used.
-  gsl::span<const std::uint8_t> extract_to(
-      gsl::span<const std::uint8_t> data, std::vector<std::uint8_t> &buffer,
-      std::vector<std::uint8_t> &uncompress_buffer) const {
+  gsl::span<const std::uint8_t>
+  extract_to(gsl::span<const std::uint8_t> data,
+             std::vector<std::uint8_t> &buffer,
+             std::vector<std::uint8_t> &uncompress_buffer) const {
     buffer.reserve(size);
     std::memcpy(buffer.data(), data.data() + offset, size);
 
@@ -164,12 +165,11 @@ class ResourcePackage {
   const FileHeader *file_header;
   std::vector<const ResourceHandle *> resource_handles;
 
- public:
+public:
   explicit ResourcePackage(gsl::span<const std::uint8_t> sp) : raw_data{sp} {
     if (sizeof(FileHeader) > sp.size()) {
-      debug(
-          "ResourcePackage::ResourcePackage(): buffer too small for "
-          "file header\n");
+      debug("ResourcePackage::ResourcePackage(): buffer too small for "
+            "file header\n");
       throw InvalidSize{sizeof(FileHeader), sp.size()};
     }
 
@@ -184,9 +184,8 @@ class ResourcePackage {
     const std::ptrdiff_t needed_size =
         sizeof(FileHeader) + sizeof(ResourceHandle) * file_header->handle_count;
     if (needed_size > sp.size()) {
-      debug(
-          "ResourcePackage::ResourcePackage(): buffer too small for "
-          "all resource handles\n");
+      debug("ResourcePackage::ResourcePackage(): buffer too small for "
+            "all resource handles\n");
       throw InvalidSize{needed_size, sp.size()};
     }
 
@@ -354,18 +353,18 @@ void pack_files(const char *output_name, const bool compress,
   auto current_offset = sizeof(FileHeader) + sizeof(ResourceHandle) * count;
 
   for (auto i = 0; i < count; ++i) {
-    auto [data, size] = load_file(files[i]);
+    auto[data, size] = load_file(files[i]);
     debug("packing file %-40s: offset = 0x%08x size = 0x%08x", files[i],
           current_offset, size);
 
     if (compress) {
-      auto [d, s] = compress_buffer(gsl::span{data.get(), size});
+      auto[d, s] = compress_buffer(gsl::span{data.get(), size});
       data = std::move(d);
       size = s;
     }
 
     if (encrypt) {
-      auto [d, s] = encrypt_buffer(gsl::span{data.get(), size});
+      auto[d, s] = encrypt_buffer(gsl::span{data.get(), size});
       data = std::move(d);
       size = s;
     }
@@ -479,12 +478,12 @@ int main(int argc, const char **argv) {
   DEBUG_ENABLED = c.debug;
 
   if (c.mode == Config::Mode::Extract) {
-    auto [buffer, size] = load_file(c.file_name);
+    auto[buffer, size] = load_file(c.file_name);
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.extract_files("output");
   } else if (c.mode == Config::Mode::List) {
-    auto [buffer, size] = load_file(c.file_name);
+    auto[buffer, size] = load_file(c.file_name);
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.list_files();
