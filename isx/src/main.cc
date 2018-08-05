@@ -207,7 +207,9 @@ public:
             handle->offset, handle->size);
 
       const auto view = handle->extract_to(raw_data, buffer, uncompress_buffer);
-      const auto file_name = fmt::sprintf("%s/%s", output_prefix, handle->path);
+      std::string path = handle->path;
+      std::replace(path.begin(), path.end(), '\\', '_');
+      const auto file_name = fmt::sprintf("%s/%s", output_prefix, path);
 
       auto *file = std::fopen(file_name.c_str(), "wb");
       if (!file) {
