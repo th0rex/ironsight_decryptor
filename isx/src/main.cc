@@ -354,18 +354,18 @@ void pack_files(const char *output_name, const bool compress,
   auto current_offset = sizeof(FileHeader) + sizeof(ResourceHandle) * count;
 
   for (auto i = 0; i < count; ++i) {
-    auto[data, size] = load_file(files[i]);
+    auto [data, size] = load_file(files[i]);
     debug("packing file %-40s: offset = 0x%08x size = 0x%08x", files[i],
           current_offset, size);
 
     if (compress) {
-      auto[d, s] = compress_buffer(gsl::span{data.get(), size});
+      auto [d, s] = compress_buffer(gsl::span{data.get(), size});
       data = std::move(d);
       size = s;
     }
 
     if (encrypt) {
-      auto[d, s] = encrypt_buffer(gsl::span{data.get(), size});
+      auto [d, s] = encrypt_buffer(gsl::span{data.get(), size});
       data = std::move(d);
       size = s;
     }
@@ -479,12 +479,12 @@ int main(int argc, const char **argv) {
   DEBUG_ENABLED = c.debug;
 
   if (c.mode == Config::Mode::Extract) {
-    auto[buffer, size] = load_file(c.file_name);
+    auto [buffer, size] = load_file(c.file_name);
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.extract_files("output");
   } else if (c.mode == Config::Mode::List) {
-    auto[buffer, size] = load_file(c.file_name);
+    auto [buffer, size] = load_file(c.file_name);
 
     ResourcePackage pckg{buffer.get(), size};
     pckg.list_files();
