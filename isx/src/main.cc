@@ -130,10 +130,9 @@ struct ResourceHandle {
     return out_size;
   }
 
-  gsl::span<const std::uint8_t>
-  extract_to(gsl::span<const std::uint8_t> data,
-             std::vector<std::uint8_t> &buffer,
-             std::vector<std::uint8_t> &uncompress_buffer) const {
+  gsl::span<const std::uint8_t> extract_to(
+      gsl::span<const std::uint8_t> data, std::vector<std::uint8_t> &buffer,
+      std::vector<std::uint8_t> &uncompress_buffer) const {
     buffer.reserve(size);
     std::memcpy(buffer.data(), data.data() + offset, size);
 
@@ -164,11 +163,12 @@ class ResourcePackage {
   const FileHeader *file_header;
   std::vector<const ResourceHandle *> resource_handles;
 
-public:
+ public:
   explicit ResourcePackage(gsl::span<const std::uint8_t> sp) : raw_data{sp} {
     if (sizeof(FileHeader) > sp.size()) {
-      debug("ResourcePackage::ResourcePackage(): buffer too small for "
-            "file header\n");
+      debug(
+          "ResourcePackage::ResourcePackage(): buffer too small for "
+          "file header\n");
       throw InvalidSize{sizeof(FileHeader), sp.size()};
     }
 
@@ -183,8 +183,9 @@ public:
     const std::ptrdiff_t needed_size =
         sizeof(FileHeader) + sizeof(ResourceHandle) * file_header->handle_count;
     if (needed_size > sp.size()) {
-      debug("ResourcePackage::ResourcePackage(): buffer too small for "
-            "all resource handles\n");
+      debug(
+          "ResourcePackage::ResourcePackage(): buffer too small for "
+          "all resource handles\n");
       throw InvalidSize{needed_size, sp.size()};
     }
 
